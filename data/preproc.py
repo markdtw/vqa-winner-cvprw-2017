@@ -6,12 +6,48 @@ import os
 import json
 import argparse
 import collections
+import cPickle as pickle
 
 from tqdm import tqdm
 from nltk.tokenize import StanfordTokenizer
 
-def processing(q, phase):
+def process_a(q, phase):
+    counts = {}
+    for row in q:
+        counts[q['answer']] = counts.get(q['answer'], 0) + 1
 
+    cw = sorted([(count,w) for w,count in counts.iteritems()], reverse=True)
+
+    occurence_thr = 8   # only preserve answers appear more than this amount
+    n_answers = 3000    # or manually set it to a number
+
+    for i, row in enumerate(cw):
+        if row[0] == occurence_thr - 1:
+            n_answers = i
+            break
+
+    vocab = [w for c, w in cw[:n_answers]]
+    itow = {i+1:w for i,w in enumerate(vocab)} # a 1-indexed vocab translation table
+    wtoi = {w:i+1 for i,w in enumerate(vocab)} # inverse table
+    pickle.dump({'itow': itow, 'wtoi': wtoi}, open('train_a_dict.p', 'wb'))
+
+    for row in q:
+        accepted_answers = 0
+        for w, c in row['answers']:
+            if w in vocab:
+                accepted_answers += c
+
+        answers_scores = []
+        for w, c in row['answers']:
+            if w in vocab:
+                answers_scores.append((w, c / accepted_answers))
+
+        row['answers_w_scores'] = answers_scores
+
+    json.dump(q, open('vqa_' + phase + '_final.json', 'w'))
+
+def process_q(q):
+    # build question dictionary
     def build_vocab(questions):
         count_thr = 0
         # count up the number of words
@@ -38,22 +74,19 @@ def processing(q, phase):
     vocab = build_vocab(q)
     itow = {i+1:w for i,w in enumerate(vocab)} # a 1-indexed vocab translation table
     wtoi = {w:i+1 for i,w in enumerate(vocab)} # inverse table
-
-    for row in tqdm(q):
-
-
+    pickle.dump({'itow': itow, 'wtoi': wtoi}, open('train_q_dict.p', 'wb'))
 
 def tokenize_q(qa, phase):
     MyTokenizer = StanfordTokenizer()
     for row in tqdm(qa):
         row['question_toked'] = MyTokenizer.tokenize(row['question'].lower())[:14]
     
-    json.dump(qa, open('vqa_' + phase + '_toked.json'))
+    json.dump(qa, open('vqa_' + phase + '_toked.json', 'w'))
 
 def combine_qa(questions, annotations, phase):
     # 443757 questions
     data = []
-    for i, q in enumerate(questions['questions']):
+    for i, q in enumerate(tqdm(questions['questions'])):
         row = {}
         # questions
         row['question'] = q['question']
@@ -70,7 +103,7 @@ def combine_qa(questions, annotations, phase):
         row['answers'] = collections.Counter(answers).most_common()
         data.append(row)
 
-    json.dump(data, open('vqa_' + phase + '_combined.json'))
+    json.dump(data, open('vqa_' + phase + '_combined.json', 'w'))
 
 def download_vqa_v2():
     # download input questions (train + val)
@@ -94,23 +127,27 @@ if __name__ == '__main__':
 
     # Combine Q and A
     if not os.path.exists('vqa_train_combined.json'):
+        print ('Combining q and a...')
         train_q = json.load(open('raw/v2_OpenEnded_mscoco_train2014_questions.json'))
         train_a = json.load(open('raw/v2_mscoco_train2014_annotations.json'))
-        combine_qa(train_q, train_a, 'train')
+        combine_qa(train_q, train_a['annotations'], 'train')
 
         #val_q = json.load(open('raw/v2_OpenEnded_mscoco_val2014_questions.json'))
         #val_a = json.load(open('raw/v2_mscoco_val2014_annotations.json'))
-        #combine_qa(val_q, val_a, 'val')
+        #combine_qa(val_q, val_a['annotations'], 'val')
 
     # Tokenize
     if not os.path.exists('vqa_train_toked.json'):
+        print ('Tokenizing...')
         train = json.load(open('vqa_train_combined.json'))
         tokenize_q(train, 'train')
 
         #val = json.load(open('vqa_val_combined.json'))
         #tokenize_q(val, 'val')
 
-    # Build dictionary
+    # Build dictionary for question and answers
     if not os.path.exists('vqa_train_final.json'):
+        print ('Building dictionary...')
         train = json.load(open('vqa_train_toked.json'))
-        processing(train, 'train')
+        process_q(train)
+        process_a(train, 'train')
