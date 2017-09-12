@@ -56,6 +56,7 @@ This will generate `result.json` (validation set only), format is referred to [v
 - A slightly different implementation: *output classifier*, I didn't use the pretrained classifier since it's hard to retrieve so I followed *eq. 5* in the paper.
 - To prepare validation data you need to uncomment some line of code in `data/preproc.py`.
 - `coco_features.npy` is a really fat file (34GB including train+val image features), you can split it and modify the data loading mechanisms in `loader.py`.
+- This code is tested with train = train and eval = val, no test data included.
 - Issues are welcome!
 
 
