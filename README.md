@@ -1,4 +1,4 @@
-# 2017 VQA Challenge Winner from CVPR'17
+# 2017 VQA Challenge Winner (CVPR'17 Workshop)
 Pytorch implementation of [Tips and Tricks for Visual Question Answering: Learnings from the 2017 Challenge by Teney et al](https://arxiv.org/pdf/1708.02711.pdf).
 
 ![Model architecture](https://i.imgur.com/phBHIqZ.png)
