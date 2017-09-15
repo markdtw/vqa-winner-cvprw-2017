@@ -28,6 +28,8 @@ Pytorch implementation of [Tips and Tricks for Visual Question Answering: Learni
   - glove.6B.300d.txt
   - vqa_train_final.json
   - coco_features.npy
+  - train_q_dict.p
+  - train_a_dict.p
   ```
 
 
@@ -53,7 +55,9 @@ This will generate `result.json` (validation set only), format is referred to [v
 
 
 ## Notes
-- A slightly different implementation: *output classifier*, I didn't use the pretrained classifier since it's hard to retrieve so I followed *eq. 5* in the paper.
+- The default classifier is softmax classifier, sigmoid multi-label classifier is also implemented but I can't train based on that.
+- Training for 50 epochs reach around 64.42% training accuracy.
+- For the output classifier, I did not use the pretrained weight since it's hard to retrieve so I followed *eq. 5* in the paper.
 - To prepare validation data you need to uncomment some line of code in `data/preproc.py`.
 - `coco_features.npy` is a really fat file (34GB including train+val image features), you can split it and modify the data loading mechanisms in `loader.py`.
 - This code is tested with train = train and eval = val, no test data included.
