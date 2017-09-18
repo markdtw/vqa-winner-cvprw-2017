@@ -27,7 +27,7 @@ def test(args):
         raise SystemExit('No CUDA available, don\'t do this.')
 
     print ('Loading data')
-    loader = Data_loader(args.bsize, args.emb, args.multilabel, train=True)
+    loader = Data_loader(args.bsize, args.emb, args.multilabel, train=False)
     print ('Parameters:\n\tvocab size: %d\n\tembedding dim: %d\n\tK: %d\n\tfeature dim: %d\
             \n\thidden dim: %d\n\toutput dim: %d' % (loader.q_words, args.emb, loader.K, loader.feat_dim,
                 args.hid, loader.n_answers))
