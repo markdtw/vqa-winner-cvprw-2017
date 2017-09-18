@@ -104,6 +104,8 @@ class Data_loader:
                     except:
                         a_batch.append(0)
             else:
+                # in validation phase return question id instead of answer to write to a json file
+                # you could also modify this to calculate the accuracy
                 a_batch.append(self.vqa[self.batch_ptr + b]['question_id'])
             
             # image batch
