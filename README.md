@@ -31,6 +31,7 @@ Pytorch implementation of [Tips and Tricks for Visual Question Answering: Learni
   - train_q_dict.p
   - train_a_dict.p
   ```
+- *Update* For convenience, [here](https://drive.google.com/open?id=0B5j6QKJb0ztbYmVXT0hBUF91RHM) is the link to tokenized questions `vqa_train_toked.json` and `vqa_val_toked.json`, make sure you run `data/preproc.py` to generate `vqa_train_final.json`, `train_q_dict.p`, etc.
 
 
 ## Train
