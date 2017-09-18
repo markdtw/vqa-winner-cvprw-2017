@@ -29,7 +29,7 @@ def process_a(q, phase):
     vocab = [w for c, w in cw[:n_answers]]
     itow = {i:w for i,w in enumerate(vocab)} # a 0-indexed vocab translation table
     wtoi = {w:i for i,w in enumerate(vocab)} # inverse table
-    pickle.dump({'itow': itow, 'wtoi': wtoi}, open('train_a_dict.p', 'wb'))
+    pickle.dump({'itow': itow, 'wtoi': wtoi}, open(phase + '_a_dict.p', 'wb'))
 
     for row in q:
         accepted_answers = 0
