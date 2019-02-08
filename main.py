@@ -1,178 +1,153 @@
-from __future__ import division
-from __future__ import print_function
-from __future__ import absolute_import
+from __future__ import division, print_function, absolute_import
 
 import os
 import pdb
 import time
-import json
+import random
 import argparse
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.autograd import Variable
-
 import numpy as np
+from tqdm import tqdm
 
 from model import Model
-from loader import Data_loader
+from utils import GOATLogger, save_ckpt, compute_score
+from data_loader import prepare_data
 
-def test(args):
-    # Some preparation
-    torch.manual_seed(1000)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(1000)
+FLAGS = argparse.ArgumentParser()
+FLAGS.add_argument('--mode', choices=['train', 'eval'])
+# Hyper-parameters
+FLAGS.add_argument('--hid-dim', type=int,
+                   help="Hidden dimension for GRU")
+FLAGS.add_argument('--batch-size', type=int,
+                   help="Batch size")
+FLAGS.add_argument('--vbatch-size', type=int,
+                   help="Batch size for validation")
+FLAGS.add_argument('--epoch', type=int,
+                   help="Epochs to train")
+# Paths
+FLAGS.add_argument('--data-root', type=str,
+                   help="Location of data")
+FLAGS.add_argument('--resume', type=str,
+                   help="Location to resume model")
+FLAGS.add_argument('--save', type=str,
+                   help="Location to save model")
+FLAGS.add_argument('--wemb-init', type=str,
+                   help="Location to pretrained wemb")
+# Others
+FLAGS.add_argument('--cpu', action='store_true',
+                   help="Set this to use CPU, default use CUDA")
+FLAGS.add_argument('--n-workers', type=int, default=2,
+                   help="How many processes for preprocessing")
+FLAGS.add_argument('--pin-mem', type=bool, default=False,
+                   help="DataLoader pin memory or not")
+FLAGS.add_argument('--log-freq', type=int, default=100,
+                   help="Logging frequency")
+FLAGS.add_argument('--seed', type=int, default=420,
+                   help="Random seed")
+
+
+def evaluate(val_loader, model, epoch, device, logger):
+    model.eval()
+
+    batches = len(val_loader)
+    for step, (v, q, a, _, _) in enumerate(tqdm(val_loader, ascii=True)):
+        v = v.to(device)
+        q = q.to(device)
+        a = a.to(device)
+
+        logits = model(v, q)
+        loss = F.binary_cross_entropy_with_logits(logits, a) * a.size(1)
+        score = compute_score(logits, a)
+
+        logger.batch_info_eval(epoch, step, batches, loss.item(), score)
+
+    score = logger.batch_info_eval(epoch, -1, batches)
+    return score
+
+
+def train(train_loader, model, optim, epoch, device, logger):
+    model.train()
+
+    batches = len(train_loader)
+    start = time.time()
+    for step, (v, q, a, _, _) in enumerate(train_loader):
+        data_time = time.time() - start
+
+        v = v.to(device)
+        q = q.to(device)
+        a = a.to(device)
+
+        logits = model(v, q)
+        loss = F.binary_cross_entropy_with_logits(logits, a) * a.size(1)
+
+        optim.zero_grad()
+        loss.backward()
+        nn.utils.clip_grad_norm_(model.parameters(), 0.25)
+        optim.step()
+
+        batch_time = time.time() - start
+        score = compute_score(logits, a)
+        logger.batch_info(epoch, step, batches, data_time, loss.item(), score, batch_time)
+        start = time.time()
+
+
+def main():
+
+    args, unparsed = FLAGS.parse_known_args()
+    if len(unparsed) != 0:
+        raise NameError("Argument {} not recognized".format(unparsed))
+
+    logger = GOATLogger(args.mode, args.save, args.log_freq)
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if args.cpu:
+        device = torch.device('cpu')
     else:
-        raise SystemExit('No CUDA available, don\'t do this.')
+        if not torch.cuda.is_available():
+            raise RuntimeError("GPU unavailable.")
 
-    print ('Loading data')
-    loader = Data_loader(args.bsize, args.emb, args.multilabel, train=False)
-    print ('Parameters:\n\tvocab size: %d\n\tembedding dim: %d\n\tK: %d\n\tfeature dim: %d\
-            \n\thidden dim: %d\n\toutput dim: %d' % (loader.q_words, args.emb, loader.K, loader.feat_dim,
-                args.hid, loader.n_answers))
+        args.devices = torch.cuda.device_count()
+        args.batch_size *= args.devices
+        torch.backends.cudnn.benchmark = True
+        device = torch.device('cuda')
+        torch.cuda.manual_seed(args.seed)
 
-    model = Model(vocab_size=loader.q_words,
-                  emb_dim=args.emb,
-                  K=loader.K,
-                  feat_dim=loader.feat_dim,
-                  hid_dim=args.hid,
-                  out_dim=loader.n_answers,
-                  pretrained_wemb=loader.pretrained_wemb)
+    # Get data
+    train_loader, val_loader, vocab_size, num_classes = prepare_data(args)
 
-    model = model.cuda()
+    # Set up model
+    model = Model(vocab_size, args.wemb_init, args.hid_dim, num_classes)
+    model = nn.DataParallel(model).to(device)
+    logger.loginfo("Parameters: {:.3f}M".format(sum(p.numel() for p in model.parameters()) / 1e6))
 
-    if args.modelpath and os.path.isfile(args.modelpath):
-        print ('Resuming from checkpoint %s' % (args.modelpath))
-        ckpt = torch.load(args.modelpath)
+    # Set up optimizer
+    optim = torch.optim.Adamax(model.parameters())
+
+    last_epoch = 0
+    bscore = 0.0
+
+    if args.resume:
+        logger.loginfo("Initialized from ckpt: " + args.resume)
+        ckpt = torch.load(args.resume, map_location=device)
+        last_epoch = ckpt['epoch']
         model.load_state_dict(ckpt['state_dict'])
-    else:
-        raise SystemExit('Need to provide model path.')
+        optim.load_state_dict(ckpt['optim_state_dict'])
 
-    result = []
-    for step in xrange(loader.n_batches):
-        # Batch preparation
-        q_batch, a_batch, i_batch = loader.next_batch()
-        q_batch = Variable(torch.from_numpy(q_batch))
-        i_batch = Variable(torch.from_numpy(i_batch))
-        q_batch, i_batch = q_batch.cuda(), i_batch.cuda()
+    if args.mode == 'eval':
+        _ = evaluate(val_loader, model, last_epoch, device, logger)
+        return
 
-        # Do one model forward and optimize
-        output = model(q_batch, i_batch)
-        _, ix = output.data.max(1)
-        for i, qid in enumerate(a_batch):
-            result.append({
-                'question_id': qid,
-                'answer': loader.a_itow[ix[i]]
-            })
+    # Train
+    for epoch in range(last_epoch, args.epoch):
+        train(train_loader, model, optim, epoch, device, logger)
+        score = evaluate(val_loader, model, epoch, device, logger)
+        bscore = save_ckpt(score, bscore, epoch, model, optim, args.save, logger)
 
-    json.dump(result, open('result.json', 'w'))
-    print ('Validation done')
+    logger.loginfo("Done")
 
-def train(args):
-    # Some preparation
-    torch.manual_seed(1000)
-    if torch.cuda.is_available():
-        torch.cuda.manual_seed(1000)
-    else:
-        raise SystemExit('No CUDA available, don\'t do this.')
-
-    print ('Loading data')
-    loader = Data_loader(args.bsize, args.emb, args.multilabel)
-    print ('Parameters:\n\tvocab size: %d\n\tembedding dim: %d\n\tK: %d\n\tfeature dim: %d\
-            \n\thidden dim: %d\n\toutput dim: %d' % (loader.q_words, args.emb, loader.K, loader.feat_dim,
-                args.hid, loader.n_answers))
-    print ('Initializing model')
-
-    model = Model(vocab_size=loader.q_words,
-                  emb_dim=args.emb,
-                  K=loader.K,
-                  feat_dim=loader.feat_dim,
-                  hid_dim=args.hid,
-                  out_dim=loader.n_answers,
-                  pretrained_wemb=loader.pretrained_wemb)
-    
-    if args.multilabel:
-        criterion = nn.BCELossWithLogis()
-    else:
-        criterion = nn.CrossEntropyLoss()
-    
-    # Move it to GPU
-    model = model.cuda()
-    criterion = criterion.cuda()
-
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr)
-
-    # Continue training from saved model
-    if args.modelpath and os.path.isfile(args.modelpath):
-        print ('Resuming from checkpoint %s' % (args.modelpath))
-        ckpt = torch.load(args.modelpath)
-        model.load_state_dict(ckpt['state_dict'])
-        optimizer.load_state_dict(ckpt['optimizer'])
-
-    # Training script 
-    print ('Start training.')
-    for ep in xrange(args.ep):
-        ep_loss = 0
-        ep_correct = 0
-        for step in xrange(loader.n_batches):
-            # Batch preparation
-            q_batch, a_batch, i_batch = loader.next_batch()
-            q_batch = Variable(torch.from_numpy(q_batch))
-            a_batch = Variable(torch.from_numpy(a_batch))
-            i_batch = Variable(torch.from_numpy(i_batch))
-            q_batch, a_batch, i_batch = q_batch.cuda(), a_batch.cuda(), i_batch.cuda()
-
-            # Do model forward
-            output = model(q_batch, i_batch)
-            loss = criterion(output, a_batch)
-
-            # Some stats
-            _, oix = output.data.max(1)
-            if args.multilabel:
-                _, aix = a_batch.data.max(1)
-            else:
-                aix = a_batch.data
-            correct = torch.eq(oix, aix).sum()
-            ep_correct += correct
-            ep_loss += loss.data[0]
-            if step % 40 == 0:
-                print ('Epoch %02d(%03d/%03d), loss: %.3f, correct: %3d / %d (%.2f%%)' %
-                        (ep+1, step, loader.n_batches, loss.data[0], correct, args.bsize, correct * 100 / args.bsize))
-
-            # compute gradient and do optim step
-            optimizer.zero_grad()
-            loss.backward()
-            optimizer.step()
-
-        # Save model after every epoch
-        tbs = {
-            'epoch': ep + 1,
-            'loss': ep_loss / loader.n_batches,
-            'accuracy': ep_correct * 100 / (loader.n_batches * args.bsize), 
-            'state_dict': model.state_dict(),
-            'optimizer': optimizer.state_dict()
-        }
-        torch.save(tbs, 'save/model-' + str(ep+1) + '.pth.tar')
-        print ('Epoch %02d done, average loss: %.3f, average accuracy: %.2f%%' % (ep+1, ep_loss / loader.n_batches, ep_correct * 100 / (loader.n_batches * args.bsize)))
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Winner of VQA 2.0 in CVPR\'17 Workshop')
-    parser.add_argument('--train', action='store_true', help='set this to train.')
-    parser.add_argument('--eval', action='store_true', help='set this to evaluate.')
-    parser.add_argument('--lr', metavar='', type=float, default=1e-4, help='initial learning rate')
-    parser.add_argument('--ep', metavar='', type=int, default=50, help='number of epochs.')
-    parser.add_argument('--bsize', metavar='', type=int, default=512, help='batch size.')
-    parser.add_argument('--hid', metavar='', type=int, default=512, help='hidden dimension.')
-    parser.add_argument('--emb', metavar='', type=int, default=300, help='embedding dimension. (50, 100, 200, *300)')
-    parser.add_argument('--modelpath', metavar='', type=str, default=None, help='trained model path.')
-    parser.add_argument('--multilabel', metavar='', type=bool, default=False, help='set this to use multilabel.')
-    args, unparsed = parser.parse_known_args()
-    if len(unparsed) != 0: raise SystemExit('Unknown argument: {}'.format(unparsed))
-    if args.train:
-        train(args)
-    if args.eval:
-        test(args)
-    if not args.train and not args.eval:
-        parser.print_help()
-
+    main()
